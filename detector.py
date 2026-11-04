@@ -81,7 +81,12 @@ def is_black_key(midi: int) -> bool:
     return (midi % 12) in (1, 3, 6, 8, 10)
 
 
-def detect_notes(video_path: str, progress_cb: ProgressFn | None = None) -> DetectionResult:
+def detect_notes(
+    video_path: str,
+    progress_cb: ProgressFn | None = None,
+    start_s: float = 0.0,
+    end_s: float | None = None,
+) -> DetectionResult:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise DetectionError("Could not open the video file.")
@@ -91,16 +96,39 @@ def detect_notes(video_path: str, progress_cb: ProgressFn | None = None) -> Dete
         if fps <= 1e-3:
             fps = 30.0
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        duration = frame_count / fps if frame_count else 0.0
+        t0 = max(0.0, float(start_s))
+        t1 = float(end_s) if end_s is not None else duration
+        if duration > 0:
+            t1 = min(t1, duration)
+        if t1 <= t0:
+            raise DetectionError("The selected time range is empty.")
+        start_frame = int(round(t0 * fps))
+        end_frame = int(round(t1 * fps)) if frame_count else None
+        if frame_count:
+            start_frame = min(max(0, start_frame), frame_count - 1)
+            end_frame = min(max(start_frame + 1, end_frame or frame_count), frame_count)
 
         _report(progress_cb, 0.02)
-        frame = _calibration_frame(cap, frame_count)
+        frame = _calibration_frame(cap, frame_count, start_frame, end_frame)
         keys = _build_keyboard(frame)
         _report(progress_cb, 0.08)
 
-        _calibrate_baselines(cap, keys, frame_count)
+        _calibrate_baselines(cap, keys, frame_count, start_frame, end_frame)
         _report(progress_cb, 0.16)
 
-        notes = _scan_notes(cap, keys, fps, frame_count, progress_cb)
+        notes = _scan_notes(
+            cap, keys, fps, frame_count, progress_cb, start_frame, end_frame
+        )
+        notes = [
+            Note(
+                pitch=note.pitch,
+                start=note.start - t0,
+                end=note.end - t0,
+                strength=note.strength,
+            )
+            for note in notes
+        ]
     finally:
         cap.release()
 
@@ -128,13 +156,25 @@ def _report(progress_cb: ProgressFn | None, fraction: float) -> None:
         progress_cb(min(1.0, max(0.0, fraction)))
 
 
-def _calibration_frame(cap: cv2.VideoCapture, frame_count: int) -> np.ndarray:
+def _calibration_frame(
+    cap: cv2.VideoCapture,
+    frame_count: int,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> np.ndarray:
     """Prefer a quiet intro frame; mid-video falling notes split the keyboard."""
-    candidates = [0]
-    if frame_count > 12:
-        candidates.append(12)
-    if frame_count > 40:
-        candidates.extend(int(frame_count * frac) for frac in (0.04, 0.10, 0.20, 0.30))
+    last = end_frame if end_frame is not None else frame_count
+    if last <= 0:
+        last = frame_count
+    start_frame = max(0, start_frame)
+    span = max(1, last - start_frame)
+    candidates = [start_frame]
+    if span > 12:
+        candidates.append(start_frame + 12)
+    if span > 40:
+        candidates.extend(start_frame + int(span * frac) for frac in (0.04, 0.10, 0.20, 0.30))
+    limit = last - 1 if last > start_frame else start_frame
+    candidates = [min(max(start_frame, idx), max(0, limit)) for idx in candidates]
     best_frame: np.ndarray | None = None
     best_score = -1e9
     for index in dict.fromkeys(candidates):
@@ -147,7 +187,7 @@ def _calibration_frame(cap: cv2.VideoCapture, frame_count: int) -> np.ndarray:
             best_score = score
             best_frame = frame
     if best_frame is None:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         ok, frame = cap.read()
         if not ok or frame is None:
             raise DetectionError("Could not read frames from the video.")
@@ -724,12 +764,21 @@ def _keys_from_black_lattice(
     return keys
 
 
-def _calibrate_baselines(cap: cv2.VideoCapture, keys: list[Key], frame_count: int) -> None:
+def _calibrate_baselines(
+    cap: cv2.VideoCapture,
+    keys: list[Key],
+    frame_count: int,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> None:
     samples_sat = [[] for _ in keys]
     samples_val = [[] for _ in keys]
+    last = end_frame if end_frame is not None else frame_count
+    start_frame = max(0, start_frame)
+    span = max(1, (last or 0) - start_frame)
 
-    if frame_count > 40:
-        indices = np.linspace(int(frame_count * 0.12), int(frame_count * 0.88), 18)
+    if span > 40:
+        indices = np.linspace(start_frame + span * 0.12, start_frame + span * 0.88, 18)
         for idx in indices.astype(int):
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
             ok, frame = cap.read()
@@ -741,7 +790,7 @@ def _calibrate_baselines(cap: cv2.VideoCapture, keys: list[Key], frame_count: in
                 samples_sat[i].append(sat)
                 samples_val[i].append(val)
     else:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         for _ in range(12):
             ok, frame = cap.read()
             if not ok or frame is None:
@@ -760,7 +809,7 @@ def _calibrate_baselines(cap: cv2.VideoCapture, keys: list[Key], frame_count: in
             key.baseline_sat = 8.0
             key.baseline_val = 40.0 if key.is_black else 200.0
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
 
 def _sample_rect(key: Key, width: int, height: int) -> tuple[int, int, int, int]:
@@ -884,6 +933,8 @@ def _scan_notes(
     fps: float,
     frame_count: int,
     progress_cb: ProgressFn | None,
+    start_frame: int = 0,
+    end_frame: int | None = None,
 ) -> list[Note]:
     n = len(keys)
     state = [False] * n
@@ -894,8 +945,14 @@ def _scan_notes(
     strength_n = [0] * n
     notes: list[Note] = []
 
-    index = 0
-    while True:
+    last = end_frame if end_frame is not None else frame_count
+    start_frame = max(0, start_frame)
+    if last is not None and last <= start_frame:
+        last = start_frame + 1
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    index = start_frame
+    span = max(1, (last or (start_frame + 1)) - start_frame)
+    while last is None or index < last:
         ok, frame = cap.read()
         if not ok or frame is None:
             break
@@ -935,8 +992,8 @@ def _scan_notes(
                         _maybe_add_note(notes, key.midi, start, time_s, avg)
 
         index += 1
-        if progress_cb and (index % 8 == 0 or (frame_count and index >= frame_count)):
-            scanned = index / frame_count if frame_count else min(0.99, index / 5000)
+        if progress_cb and (index % 8 == 0 or (last and index >= last)):
+            scanned = (index - start_frame) / span
             _report(progress_cb, 0.16 + 0.84 * min(1.0, scanned))
 
     end_time = index / fps
