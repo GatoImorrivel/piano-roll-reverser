@@ -25,7 +25,15 @@ from detector import (
     frame_key_states,
     midi_name,
 )
-from downloader import DownloadError, download_youtube, is_url, validate_local_video
+from downloader import (
+    AuthRequired,
+    DownloadError,
+    ask_youtube_login,
+    download_youtube,
+    has_saved_cookies,
+    is_url,
+    validate_local_video,
+)
 
 WINDOW = "piano-roll debug"
 HELP = "space pause | , . step | [ ] speed | q quit"
@@ -36,7 +44,7 @@ def ask_debug_source() -> str | None:
     root = tk.Tk()
     root.title("Debug video")
     root.resizable(True, False)
-    root.minsize(460, 140)
+    root.minsize(520, 200)
 
     chosen: dict[str, str] = {}
     url_var = tk.StringVar()
@@ -79,8 +87,21 @@ def ask_debug_source() -> str | None:
     ttk.Label(row, textvariable=file_var).pack(side=tk.LEFT, padx=(10, 0))
     btns = ttk.Frame(frame)
     btns.pack(fill=tk.X)
+    def sign_in() -> None:
+        ask_youtube_login(root)
+        youtube_status.set(
+            "YouTube: signed in" if has_saved_cookies() else "YouTube: not signed in"
+        )
+
+    youtube_status = tk.StringVar(
+        value="YouTube: signed in" if has_saved_cookies() else "YouTube: not signed in"
+    )
     ttk.Button(btns, text="Open debug", command=use_url).pack(side=tk.LEFT)
+    ttk.Button(btns, text="Sign in to YouTube…", command=sign_in).pack(
+        side=tk.LEFT, padx=(8, 0)
+    )
     ttk.Button(btns, text="Cancel", command=root.destroy).pack(side=tk.LEFT, padx=(8, 0))
+    ttk.Label(frame, textvariable=youtube_status).pack(anchor=tk.W, pady=(8, 0))
     root.bind("<Return>", lambda _e: use_url())
     root.mainloop()
     return chosen.get("source")
@@ -211,9 +232,22 @@ def _resolve_source(source: str) -> Path:
     if is_url(source):
         dest = Path(tempfile.mkdtemp(prefix="piano-roll-debug-"))
         print("Downloading YouTube video…")
-        path, title = download_youtube(
-            source, dest, lambda frac: print(f"\rDownload {frac * 100:5.1f}%", end="", flush=True)
-        )
+        try:
+            path, title = download_youtube(
+                source,
+                dest,
+                lambda frac: print(f"\rDownload {frac * 100:5.1f}%", end="", flush=True),
+            )
+        except AuthRequired:
+            print("\nYouTube asked for a sign-in.")
+            if not ask_youtube_login(failed=True):
+                raise
+            print("Retrying download…")
+            path, title = download_youtube(
+                source,
+                dest,
+                lambda frac: print(f"\rDownload {frac * 100:5.1f}%", end="", flush=True),
+            )
         print(f"\nDownloaded {title}")
         return path
     return validate_local_video(source)

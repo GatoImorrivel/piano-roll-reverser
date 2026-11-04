@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -13,6 +12,8 @@ import wave
 from pathlib import Path
 
 import numpy as np
+
+from runtime import find_executable
 
 PCM_RATE = 44100
 PCM_CHANNELS = 2
@@ -27,15 +28,15 @@ def resolve_audio_path(video: Path) -> Path:
 
 
 def _ffmpeg() -> str | None:
-    return shutil.which("ffmpeg")
+    return find_executable("ffmpeg")
 
 
 def _paplay() -> str | None:
-    return shutil.which("paplay")
+    return find_executable("paplay")
 
 
 def _ffplay() -> str | None:
-    return shutil.which("ffplay")
+    return find_executable("ffplay")
 
 
 def _default_wav_path(video: Path) -> Path:

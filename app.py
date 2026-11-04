@@ -14,7 +14,15 @@ from tkinter import filedialog, messagebox, ttk
 
 from audio_player import ensure_pcm_wav
 from detector import DetectionError, DetectionResult, detect_notes
-from downloader import DownloadError, download_youtube, is_url, validate_local_video
+from downloader import (
+    AuthRequired,
+    DownloadError,
+    ask_youtube_login,
+    download_youtube,
+    has_saved_cookies,
+    is_url,
+    validate_local_video,
+)
 from midi_synth import render_notes_wav
 from midi_writer import write_midi
 from piano_roll_view import PianoRollCanvas, VideoPreview
@@ -109,7 +117,17 @@ class PianoRollApp(tk.Tk):
         self.file_var = tk.StringVar(value="No file selected")
         ttk.Label(file_row, textvariable=self.file_var).pack(side=tk.LEFT, padx=(10, 0))
 
-        ttk.Button(frame, text="Next", command=self._pick_next).pack(anchor=tk.W)
+        next_row = ttk.Frame(frame)
+        next_row.pack(anchor=tk.W)
+        ttk.Button(next_row, text="Next", command=self._pick_next).pack(side=tk.LEFT)
+        ttk.Button(
+            next_row, text="Sign in to YouTube…", command=self._sign_in_youtube
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        self.youtube_status_var = tk.StringVar()
+        ttk.Label(next_row, textvariable=self.youtube_status_var).pack(
+            side=tk.LEFT, padx=(10, 0)
+        )
+        self._refresh_youtube_status()
         return frame
 
     def _build_trim(self) -> ttk.Frame:
@@ -250,6 +268,16 @@ class PianoRollApp(tk.Tk):
         self.url_var.set("")
         self.file_var.set(self._local_path.name)
 
+    def _refresh_youtube_status(self) -> None:
+        if has_saved_cookies():
+            self.youtube_status_var.set("YouTube: signed in")
+        else:
+            self.youtube_status_var.set("YouTube: not signed in")
+
+    def _sign_in_youtube(self) -> None:
+        ask_youtube_login(self)
+        self._refresh_youtube_status()
+
     def _pick_next(self) -> None:
         if self._busy:
             return
@@ -270,10 +298,12 @@ class PianoRollApp(tk.Tk):
         self.progress["value"] = 0
         self.status_var.set("Starting…")
         threading.Thread(
-            target=self._download_worker, args=(source, use_url), daemon=True
+            target=self._download_worker,
+            args=(source, use_url, False),
+            daemon=True,
         ).start()
 
-    def _download_worker(self, source: str, use_url: bool) -> None:
+    def _download_worker(self, source: str, use_url: bool, retried_auth: bool) -> None:
         try:
             assert self._tempdir is not None
             if use_url:
@@ -287,6 +317,12 @@ class PianoRollApp(tk.Tk):
                 title = video_path.stem
             self.after(0, lambda: self.status_var.set("Preparing audio…"))
             ensure_pcm_wav(video_path)
+        except AuthRequired as exc:
+            if retried_auth:
+                self.after(0, self._on_error, str(exc))
+                return
+            self.after(0, self._ask_login_and_retry, source, str(exc))
+            return
         except (DownloadError, OSError) as exc:
             self.after(0, self._on_error, str(exc))
             return
@@ -294,6 +330,23 @@ class PianoRollApp(tk.Tk):
             self.after(0, self._on_error, f"Unexpected error: {exc}")
             return
         self.after(0, self._on_video_ready, video_path, title)
+
+    def _ask_login_and_retry(self, source: str, message: str) -> None:
+        self._busy = False
+        self.progress["value"] = 0
+        self.status_var.set("YouTube asked for a sign-in.")
+        self._refresh_youtube_status()
+        if ask_youtube_login(self, failed=True):
+            self._refresh_youtube_status()
+            self._busy = True
+            self.status_var.set("Retrying download…")
+            threading.Thread(
+                target=self._download_worker,
+                args=(source, True, True),
+                daemon=True,
+            ).start()
+            return
+        self._on_error(message)
 
     def _on_video_ready(self, video_path: Path, title: str) -> None:
         self._busy = False
