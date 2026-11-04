@@ -11,12 +11,14 @@ import numpy as np
 ProgressFn = Callable[[float], None]
 
 MIN_NOTE_SEC = 0.03
-DEBOUNCE_ON = 1
+DEBOUNCE_ON = 2
+DEBOUNCE_ON_STRONG = 1
 DEBOUNCE_OFF = 2
+STRONG_SAT = 48.0
 SAT_ON = 45.0
-SAT_ON_BLACK = 50.0
+SAT_ON_BLACK = 58.0
 SAT_DELTA = 25.0
-SAT_DELTA_BLACK = 28.0
+SAT_DELTA_BLACK = 32.0
 VAL_DELTA_WHITE = 40.0
 VAL_ON_BLACK = 40.0
 VAL_DELTA_BLACK = 28.0
@@ -818,15 +820,9 @@ def _sample_rect(key: Key, width: int, height: int) -> tuple[int, int, int, int]
     """Pixel box sampled on the key surface: (x0, y0, x1, y1)."""
     cx = key.mid_x or (key.x0 + key.x1) // 2
     if key.is_black:
-<<<<<<< Updated upstream
-        # Most of the black surface. A one-frame stab often lights only part of it.
-        ya = int(key.y0 + 0.16 * (key.y1 - key.y0))
-        yb = int(key.y0 + 0.72 * (key.y1 - key.y0))
-=======
         # Lower third, a bit wider than a 1px tick. Neon lives on the crown.
         ya = int(key.y0 + 0.67 * (key.y1 - key.y0))
         yb = key.y1
->>>>>>> Stashed changes
         rw = max(2, (key.x1 - key.x0) // 3)
         xa = max(0, cx - rw)
         xb = min(width, cx + rw + 1)
@@ -850,14 +846,8 @@ def _sample_key(hsv: np.ndarray, key: Key) -> tuple[float, float]:
     roi = hsv[ya:yb, xa:xb]
     if roi.size == 0:
         return 0.0, 0.0
-    sat_px = roi[:, :, 1].astype(np.float32)
-    val_px = roi[:, :, 2].astype(np.float32)
-    if key.is_black and sat_px.size >= 8:
-        sat = float(np.percentile(sat_px, 75))
-        val = float(np.percentile(val_px, 75))
-    else:
-        sat = float(sat_px.mean())
-        val = float(val_px.mean())
+    sat = float(roi[:, :, 1].mean())
+    val = float(roi[:, :, 2].mean())
     # Near-black chroma noise reports sat=255 with val≈0.
     if val < MIN_VAL_FOR_SAT:
         sat = 0.0
@@ -882,10 +872,7 @@ def _key_activation(key: Key, sat: float, val: float) -> tuple[bool, float]:
     if key.is_black:
         colored = sat >= max(SAT_ON_BLACK, key.baseline_sat + SAT_DELTA_BLACK)
         bright = val >= max(VAL_ON_BLACK, key.baseline_val + VAL_DELTA_BLACK)
-        # Stabs may add color without much brightness, or a pale highlight
-        # without much sat. Either one is a hit once near-black noise is gated.
-        strength = max(sat_strength, val - key.baseline_val)
-        return colored or bright, strength
+        return colored and bright, sat_strength
     colored = sat >= max(SAT_ON, key.baseline_sat + SAT_DELTA)
     dimmed = val <= key.baseline_val - VAL_DELTA_WHITE
     return colored or dimmed, sat_strength
@@ -911,11 +898,6 @@ def _suppress_neighbor_bleed(
             if strength[i] < strength[j] * BLEED_RATIO:
                 filtered[i] = False
                 break
-<<<<<<< Updated upstream
-            # Glow on a black key next to a lit white is weaker; a real black
-            # hit can still be below the white's sat without being bleed.
-=======
->>>>>>> Stashed changes
             if (
                 key.is_black
                 and not keys[j].is_black
@@ -1005,15 +987,11 @@ def _scan_notes(
             if raw_on[i]:
                 pending_on[i] += 1
                 pending_off[i] = 0
-<<<<<<< Updated upstream
-                if not state[i] and pending_on[i] >= DEBOUNCE_ON:
-=======
                 if key.is_black or strength[i] >= STRONG_SAT:
                     need = DEBOUNCE_ON_STRONG
                 else:
                     need = DEBOUNCE_ON
                 if not state[i] and pending_on[i] >= need:
->>>>>>> Stashed changes
                     state[i] = True
                     started[i] = time_s - (pending_on[i] - 1) / fps
                     strength_acc[i] = 0.0
