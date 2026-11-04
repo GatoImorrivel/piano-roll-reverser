@@ -11,7 +11,10 @@ import numpy as np
 ProgressFn = Callable[[float], None]
 
 MIN_NOTE_SEC = 0.03
-DEBOUNCE_FRAMES = 2
+DEBOUNCE_ON = 2
+DEBOUNCE_ON_STRONG = 1
+DEBOUNCE_OFF = 2
+STRONG_SAT = 48.0
 SAT_ON = 45.0
 SAT_ON_BLACK = 58.0
 SAT_DELTA = 25.0
@@ -897,14 +900,17 @@ def _suppress_neighbor_bleed(
 
 
 def _same_envelope(a: Note, b: Note) -> bool:
-    duration = min(a.end - a.start, b.end - b.start)
+    da = a.end - a.start
+    db = b.end - b.start
+    duration = min(da, db)
     if duration <= 0:
         return False
     overlap = min(a.end, b.end) - max(a.start, b.start)
     if overlap <= 0:
         return False
     same_span = abs(a.start - b.start) <= 0.08 and abs(a.end - b.end) <= 0.08
-    return same_span or overlap >= 0.85 * duration
+    similar_len = max(da, db) <= 2.5 * min(da, db)
+    return same_span or (similar_len and overlap >= 0.85 * duration)
 
 
 def _drop_chromatic_ghosts(notes: list[Note]) -> list[Note]:
@@ -972,9 +978,10 @@ def _scan_notes(
             if raw_on[i]:
                 pending_on[i] += 1
                 pending_off[i] = 0
-                if not state[i] and pending_on[i] >= DEBOUNCE_FRAMES:
+                need = DEBOUNCE_ON_STRONG if strength[i] >= STRONG_SAT else DEBOUNCE_ON
+                if not state[i] and pending_on[i] >= need:
                     state[i] = True
-                    started[i] = time_s
+                    started[i] = time_s - (pending_on[i] - 1) / fps
                     strength_acc[i] = 0.0
                     strength_n[i] = 0
                 if state[i]:
@@ -983,7 +990,7 @@ def _scan_notes(
             else:
                 pending_off[i] += 1
                 pending_on[i] = 0
-                if state[i] and pending_off[i] >= DEBOUNCE_FRAMES:
+                if state[i] and pending_off[i] >= DEBOUNCE_OFF:
                     state[i] = False
                     start = started[i]
                     started[i] = None
