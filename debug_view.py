@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import argparse
 import tempfile
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
 import cv2
+import numpy as np
+
+from audio_player import FileAudioPlayer
 
 from detector import (
     DetectionError,
@@ -88,6 +92,7 @@ def run_debug(source: str) -> None:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise DetectionError("Could not open the video file.")
+    audio = FileAudioPlayer()
 
     try:
         fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
@@ -104,9 +109,15 @@ def run_debug(source: str) -> None:
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         paused = False
-        delay = max(1, int(1000 / fps))
+        base_delay = max(1, int(1000 / fps))
+        delay = base_delay
         index = 0
         last: np.ndarray | None = None
+        audio.open(video_path)
+        rate = 1.0
+        anchor_mono = time.monotonic()
+        anchor_index = 0
+        audio.play(0.0, rate=rate)
 
         print(f"Keys: {len(keys)}  {midi_name(keys[0].midi)}–{midi_name(keys[-1].midi)}")
         print(HELP)
@@ -114,15 +125,28 @@ def run_debug(source: str) -> None:
         cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
         while True:
             if not paused or last is None:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    if last is None:
-                        raise DetectionError("Could not read frames from the video.")
-                    paused = True
-                    frame = last
-                else:
-                    last = frame
+                target = anchor_index + (time.monotonic() - anchor_mono) * fps * rate
+                skipped = 0
+                while index < target - 0.5 and skipped < 12:
+                    ok, nxt = cap.read()
+                    if not ok or nxt is None:
+                        break
+                    last = nxt
                     index += 1
+                    skipped += 1
+                if skipped == 0:
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        if last is None:
+                            raise DetectionError("Could not read frames from the video.")
+                        paused = True
+                        audio.stop()
+                        frame = last
+                    else:
+                        last = frame
+                        index += 1
+                else:
+                    frame = last
             else:
                 frame = last
 
@@ -137,18 +161,39 @@ def run_debug(source: str) -> None:
                 break
             if key == ord(" "):
                 paused = not paused
+                if paused:
+                    audio.stop()
+                else:
+                    anchor_mono = time.monotonic()
+                    anchor_index = index
+                    audio.play(index / fps, rate=rate)
             elif key == ord(",") and index > 1:
                 index = max(0, index - 2)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, index)
                 paused = True
                 last = None
+                audio.stop()
             elif key == ord("."):
                 paused = False
+                anchor_mono = time.monotonic()
+                anchor_index = index
+                audio.play(index / fps, rate=rate)
             elif key == ord("["):
                 delay = min(500, delay * 2)
+                rate = base_delay / delay
+                if not paused:
+                    anchor_mono = time.monotonic()
+                    anchor_index = index
+                    audio.play(index / fps, rate=rate)
             elif key == ord("]"):
                 delay = max(1, delay // 2)
+                rate = base_delay / delay
+                if not paused:
+                    anchor_mono = time.monotonic()
+                    anchor_index = index
+                    audio.play(index / fps, rate=rate)
     finally:
+        audio.close()
         cap.release()
         cv2.destroyAllWindows()
 

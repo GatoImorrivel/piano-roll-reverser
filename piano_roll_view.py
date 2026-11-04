@@ -10,6 +10,7 @@ from tkinter import ttk
 import cv2
 from PIL import Image, ImageTk
 
+from audio_player import FileAudioPlayer
 from detector import Note, _white_coord, is_black_key, midi_name
 
 NOTE_FILL = "#3d8bfd"
@@ -39,6 +40,7 @@ class VideoPreview(ttk.Frame):
         self._anchor_mono = 0.0
         self._anchor_time = 0.0
         self._on_time: callable | None = None
+        self._audio = FileAudioPlayer()
         self.fps = 30.0
         self.duration = 0.0
         self.time = 0.0
@@ -64,10 +66,12 @@ class VideoPreview(ttk.Frame):
         self.duration = frames / self.fps if frames else 0.0
         self.start = 0.0
         self.end = self.duration
+        self._audio.open(path)
         self.seek(0.0)
 
     def close(self) -> None:
         self.pause()
+        self._audio.close()
         if self._cap is not None:
             self._cap.release()
             self._cap = None
@@ -93,10 +97,12 @@ class VideoPreview(ttk.Frame):
         self._playing = True
         self._anchor_mono = time.monotonic()
         self._anchor_time = self.time
+        self._audio.play(self.time, end=self.end)
         self._schedule()
 
     def pause(self) -> None:
         self._playing = False
+        self._audio.stop()
         if self._after is not None:
             self.after_cancel(self._after)
             self._after = None
@@ -120,6 +126,8 @@ class VideoPreview(ttk.Frame):
             self.time = seconds
         self._anchor_mono = time.monotonic()
         self._anchor_time = self.time
+        if self._playing:
+            self._audio.play(self.time, end=self.end)
         if self._on_time:
             self._on_time(self.time)
 

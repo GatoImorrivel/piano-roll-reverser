@@ -1,4 +1,4 @@
-"""YouTube download (video-only) and local video path checks."""
+"""YouTube download (H.264 + audio) and local video path checks."""
 
 from __future__ import annotations
 
@@ -56,20 +56,31 @@ def download_youtube(
         if total:
             progress_cb(min(1.0, downloaded / total))
 
-    # YouTube rarely offers a combined progressive file anymore. Audio is
-    # unused here, so prefer a single video-only stream OpenCV can open.
+    # Prefer H.264 + audio remuxed to mp4 so OpenCV can open the picture
+    # and ffplay can play the soundtrack. Fall back to a video-only file
+    # plus a sidecar audio track if merge is unavailable.
+    video_fmt = (
+        "bestvideo[height<=1080][vcodec^=avc][protocol^=http]/"
+        "bestvideo[height<=1080][vcodec^=avc]/"
+        "bestvideo[vcodec^=avc]/"
+        "bestvideo[height<=1080][vcodec^=vp9][protocol^=http]/"
+        "bestvideo[height<=1080][protocol^=http]/"
+        "bestvideo[height<=1080]/"
+        "bestvideo/"
+        "best"
+    )
+    merged_fmt = (
+        "bestvideo[height<=1080][vcodec^=avc]+bestaudio[ext=m4a]/"
+        "bestvideo[height<=1080][vcodec^=avc]+bestaudio/"
+        "bestvideo[vcodec^=avc]+bestaudio/"
+        "bestvideo[height<=1080]+bestaudio/"
+        "bestvideo+bestaudio/"
+        "best"
+    )
     opts = {
-        "format": (
-            "bestvideo[height<=1080][vcodec^=avc][protocol^=http]/"
-            "bestvideo[height<=1080][vcodec^=avc]/"
-            "bestvideo[vcodec^=avc]/"
-            "bestvideo[height<=1080][vcodec^=vp9][protocol^=http]/"
-            "bestvideo[height<=1080][protocol^=http]/"
-            "bestvideo[height<=1080]/"
-            "bestvideo/"
-            "best"
-        ),
+        "format": merged_fmt,
         "outtmpl": str(dest / "%(id)s.%(ext)s"),
+        "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
@@ -80,12 +91,19 @@ def download_youtube(
     }
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except yt_dlp.utils.DownloadError as exc:
-        raise DownloadError(_clean_ytdlp_message(exc)) from exc
-    except Exception as exc:  # yt-dlp can raise several types
-        raise DownloadError(f"Download failed: {exc}") from exc
+        info = _extract(url, opts)
+    except DownloadError:
+        opts["format"] = video_fmt
+        opts.pop("merge_output_format", None)
+        info = _extract(url, opts)
+        path = _resolve_download_path(info, dest)
+        if path is None or not path.is_file():
+            raise DownloadError("Download finished but the video file is missing.")
+        _download_audio_sidecar(url, dest, path.stem)
+        if progress_cb:
+            progress_cb(1.0)
+        title = (info.get("title") or path.stem).strip() or path.stem
+        return path, title
 
     if not info:
         raise DownloadError("Could not read video information.")
@@ -99,6 +117,36 @@ def download_youtube(
 
     title = (info.get("title") or path.stem).strip() or path.stem
     return path, title
+
+
+def _extract(url: str, opts: dict) -> dict:
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except yt_dlp.utils.DownloadError as exc:
+        raise DownloadError(_clean_ytdlp_message(exc)) from exc
+    except Exception as exc:  # yt-dlp can raise several types
+        raise DownloadError(f"Download failed: {exc}") from exc
+    if not info:
+        raise DownloadError("Could not read video information.")
+    return info
+
+
+def _download_audio_sidecar(url: str, dest: Path, stem: str) -> None:
+    opts = {
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "outtmpl": str(dest / f"{stem}.audio.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "restrictfilenames": True,
+        "overwrites": True,
+    }
+    try:
+        _extract(url, opts)
+    except DownloadError:
+        return
 
 
 def _resolve_download_path(info: dict, dest: Path) -> Path | None:
