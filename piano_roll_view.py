@@ -86,6 +86,16 @@ class VideoPreview(ttk.Frame):
         self._on_time = callback
 
     @property
+    def has_original_audio(self) -> bool:
+        return self._audio.has_original
+
+    def set_recreated_audio(self, path: Path | None, offset: float = 0.0) -> None:
+        self._audio.set_secondary(path, offset)
+
+    def set_mix(self, original: bool, recreated: bool) -> None:
+        self._audio.set_mix(original, recreated)
+
+    @property
     def playing(self) -> bool:
         return self._playing
 

@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 from audio_player import ensure_pcm_wav
 from detector import DetectionError, DetectionResult, detect_notes
 from downloader import DownloadError, download_youtube, is_url, validate_local_video
+from midi_synth import render_notes_wav
 from midi_writer import write_midi
 from piano_roll_view import PianoRollCanvas, VideoPreview
 
@@ -41,6 +42,7 @@ class PianoRollApp(tk.Tk):
         self._tempdir: Path | None = None
         self._video_path: Path | None = None
         self._midi_path: Path | None = None
+        self._recreated_path: Path | None = None
         self._suggested_name = "output.mid"
         self._title = "output"
         self._result: DetectionResult | None = None
@@ -193,6 +195,22 @@ class PianoRollApp(tk.Tk):
         nav = ttk.Frame(frame)
         nav.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         ttk.Button(nav, text="Back", command=self._compare_back).pack(side=tk.LEFT)
+        self.orig_audio_var = tk.BooleanVar(value=True)
+        self.rec_audio_var = tk.BooleanVar(value=True)
+        self.orig_audio_btn = ttk.Checkbutton(
+            nav,
+            text="Original Audio",
+            variable=self.orig_audio_var,
+            command=self._on_mix_changed,
+        )
+        self.orig_audio_btn.pack(side=tk.LEFT, padx=(16, 0))
+        self.rec_audio_btn = ttk.Checkbutton(
+            nav,
+            text="Recreated Audio",
+            variable=self.rec_audio_var,
+            command=self._on_mix_changed,
+        )
+        self.rec_audio_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.save_btn = ttk.Button(nav, text="Save MIDI…", command=self._save_midi)
         self.save_btn.pack(side=tk.RIGHT)
         return frame
@@ -283,6 +301,7 @@ class PianoRollApp(tk.Tk):
         self._title = title
         self._suggested_name = _safe_filename(title) + ".mid"
         self._midi_path = None
+        self._recreated_path = None
         self._result = None
         self._detect_range = None
         try:
@@ -383,19 +402,30 @@ class PianoRollApp(tk.Tk):
             )
             midi_path = self._tempdir / "output.mid"
             write_midi(result.notes, midi_path)
+            rec_path = self._tempdir / "output.recreated.wav"
+            try:
+                render_notes_wav(result.notes, rec_path, duration=end - start)
+            except Exception:
+                rec_path = None
         except (DetectionError, ValueError, OSError) as exc:
             self.after(0, self._on_error, str(exc))
             return
         except Exception as exc:
             self.after(0, self._on_error, f"Unexpected error: {exc}")
             return
-        self.after(0, self._on_detect_done, midi_path, result, start, end)
+        self.after(0, self._on_detect_done, midi_path, rec_path, result, start, end)
 
     def _on_detect_done(
-        self, midi_path: Path, result: DetectionResult, start: float, end: float
+        self,
+        midi_path: Path,
+        rec_path: Path | None,
+        result: DetectionResult,
+        start: float,
+        end: float,
     ) -> None:
         self._busy = False
         self._midi_path = midi_path
+        self._recreated_path = rec_path
         self._result = result
         self._detect_range = (start, end)
         self.progress["value"] = 100
@@ -413,6 +443,20 @@ class PianoRollApp(tk.Tk):
             self._on_error(str(exc))
             return
         self.compare_video.set_range(start, end)
+        self.compare_video.set_recreated_audio(self._recreated_path, offset=start)
+        self.orig_audio_var.set(True)
+        self.rec_audio_var.set(True)
+        if self.compare_video.has_original_audio:
+            self.orig_audio_btn.state(["!disabled"])
+        else:
+            self.orig_audio_var.set(False)
+            self.orig_audio_btn.state(["disabled"])
+        if self._recreated_path is not None:
+            self.rec_audio_btn.state(["!disabled"])
+        else:
+            self.rec_audio_var.set(False)
+            self.rec_audio_btn.state(["disabled"])
+        self._on_mix_changed()
         self.compare_video.seek(start)
         self.roll.set_notes(
             self._result.notes, self._result.midi_low, self._result.midi_high, duration
@@ -428,6 +472,9 @@ class PianoRollApp(tk.Tk):
     def _compare_back(self) -> None:
         self.compare_video.pause()
         self._show("trim")
+
+    def _on_mix_changed(self) -> None:
+        self.compare_video.set_mix(self.orig_audio_var.get(), self.rec_audio_var.get())
 
     def _toggle_compare(self) -> None:
         if self.compare_video.playing:

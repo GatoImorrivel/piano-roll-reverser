@@ -12,6 +12,8 @@ import time
 import wave
 from pathlib import Path
 
+import numpy as np
+
 PCM_RATE = 44100
 PCM_CHANNELS = 2
 PCM_WIDTH = 2
@@ -117,14 +119,35 @@ class FileAudioPlayer:
         self._play_mono = 0.0
         self._startup_delay = 0.0
         self._use_wall = False
+        self._secondary: Path | None = None
+        self._secondary_offset = 0.0
+        self._mix_original = True
+        self._mix_recreated = False
 
     def open(self, path: Path) -> None:
         self.close()
         self._wav = ensure_pcm_wav(path)
 
+    @property
+    def has_original(self) -> bool:
+        return self._wav is not None
+
+    @property
+    def has_recreated(self) -> bool:
+        return self._secondary is not None
+
+    def set_secondary(self, wav: Path | None, time_offset: float = 0.0) -> None:
+        self._secondary = Path(wav) if wav is not None else None
+        self._secondary_offset = time_offset
+
+    def set_mix(self, original: bool, recreated: bool) -> None:
+        with self._lock:
+            self._mix_original = bool(original)
+            self._mix_recreated = bool(recreated)
+
     def play(self, start: float, end: float | None = None, rate: float = 1.0) -> None:
         self.stop()
-        if self._wav is None:
+        if self._wav is None and self._secondary is None:
             return
         self._start_sec = max(0.0, start)
         self._end = end
@@ -179,6 +202,10 @@ class FileAudioPlayer:
     def close(self) -> None:
         self.stop()
         self._wav = None
+        self._secondary = None
+        self._secondary_offset = 0.0
+        self._mix_original = True
+        self._mix_recreated = False
 
     def alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None and not self._paused
@@ -283,38 +310,47 @@ class FileAudioPlayer:
         )
 
     def _feed(self) -> None:
-        if self._wav is None:
-            return
         proc = self._proc
         if proc is None or proc.stdin is None:
             return
+        orig = _open_wave(self._wav)
+        rec = _open_wave(self._secondary)
         try:
-            with wave.open(str(self._wav), "rb") as wav:
-                frame_rate = max(wav.getframerate(), 1)
-                start_frame = int(round(self._start_sec * frame_rate))
-                wav.setpos(min(max(0, start_frame), wav.getnframes()))
-                end_bytes = None
-                if self._end is not None and self._end > self._start_sec:
-                    end_bytes = int((self._end - self._start_sec) * PCM_BPS)
-                while not self._stop_evt.is_set():
-                    frames = 2048
-                    if end_bytes is not None:
-                        left = end_bytes - self._bytes_sent
-                        if left <= 0:
-                            break
-                        frames = min(frames, max(1, left // (PCM_CHANNELS * PCM_WIDTH)))
-                    data = wav.readframes(frames)
-                    if not data:
+            _seek_wave(orig, self._start_sec)
+            _seek_wave(rec, self._start_sec - self._secondary_offset)
+            end_bytes = None
+            if self._end is not None and self._end > self._start_sec:
+                end_bytes = int((self._end - self._start_sec) * PCM_BPS)
+            while not self._stop_evt.is_set():
+                frames = 2048
+                if end_bytes is not None:
+                    left = end_bytes - self._bytes_sent
+                    if left <= 0:
                         break
-                    try:
-                        proc.stdin.write(data)
-                    except BrokenPipeError:
-                        break
-                    except ValueError:
-                        break
-                    with self._lock:
-                        self._bytes_sent += len(data)
+                    frames = min(frames, max(1, left // (PCM_CHANNELS * PCM_WIDTH)))
+                if orig is None and rec is None:
+                    break
+                if end_bytes is None and _wave_done(orig) and _wave_done(rec):
+                    break
+                orig_samples = _read_wave(orig, frames)
+                rec_samples = _read_wave(rec, frames)
+                with self._lock:
+                    want_orig = self._mix_original
+                    want_rec = self._mix_recreated
+                data = _mix_chunk(orig_samples, rec_samples, frames, want_orig, want_rec)
+                try:
+                    proc.stdin.write(data.tobytes())
+                except BrokenPipeError:
+                    break
+                except ValueError:
+                    break
+                with self._lock:
+                    self._bytes_sent += data.nbytes
         finally:
+            if orig is not None:
+                orig.close()
+            if rec is not None:
+                rec.close()
             try:
                 proc.stdin.close()
             except Exception:
@@ -360,3 +396,60 @@ class FileAudioPlayer:
                 proc.wait(timeout=0.4)
             except subprocess.TimeoutExpired:
                 pass
+
+
+def _open_wave(path: Path | None) -> wave.Wave_read | None:
+    if path is None:
+        return None
+    try:
+        return wave.open(str(path), "rb")
+    except Exception:
+        return None
+
+
+def _seek_wave(wav: wave.Wave_read | None, seconds: float) -> None:
+    if wav is None:
+        return
+    rate = max(wav.getframerate(), 1)
+    frame = int(round(seconds * rate))
+    wav.setpos(min(max(0, frame), wav.getnframes()))
+
+
+def _wave_done(wav: wave.Wave_read | None) -> bool:
+    return wav is None or wav.tell() >= wav.getnframes()
+
+
+def _read_wave(wav: wave.Wave_read | None, n_frames: int) -> np.ndarray:
+    need = n_frames * PCM_CHANNELS
+    if wav is None:
+        return np.zeros(need, dtype=np.int16)
+    samples = np.frombuffer(wav.readframes(n_frames), dtype=np.int16).copy()
+    if samples.size < need:
+        samples = np.pad(samples, (0, need - samples.size))
+    return samples[:need]
+
+
+def _mix_chunk(
+    orig: np.ndarray,
+    rec: np.ndarray,
+    n_frames: int,
+    want_orig: bool,
+    want_rec: bool,
+) -> np.ndarray:
+    need = n_frames * PCM_CHANNELS
+    if orig.size < need:
+        orig = np.pad(orig, (0, need - orig.size))
+    if rec.size < need:
+        rec = np.pad(rec, (0, need - rec.size))
+    if want_orig and not want_rec:
+        return orig[:need]
+    if want_rec and not want_orig:
+        return rec[:need]
+    if not want_orig and not want_rec:
+        return np.zeros(need, dtype=np.int16)
+    orig_f = orig[:need].astype(np.float32).reshape(-1, 2)
+    rec_f = rec[:need].astype(np.float32).reshape(-1, 2)
+    left = (orig_f[:, 0] + orig_f[:, 1]) * 0.5
+    right = (rec_f[:, 0] + rec_f[:, 1]) * 0.5
+    stacked = np.stack([left, right], axis=1)
+    return np.clip(stacked, -32768, 32767).astype(np.int16).reshape(-1)
