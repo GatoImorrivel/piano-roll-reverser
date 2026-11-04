@@ -818,9 +818,15 @@ def _sample_rect(key: Key, width: int, height: int) -> tuple[int, int, int, int]
     """Pixel box sampled on the key surface: (x0, y0, x1, y1)."""
     cx = key.mid_x or (key.x0 + key.x1) // 2
     if key.is_black:
+<<<<<<< Updated upstream
         # Most of the black surface. A one-frame stab often lights only part of it.
         ya = int(key.y0 + 0.16 * (key.y1 - key.y0))
         yb = int(key.y0 + 0.72 * (key.y1 - key.y0))
+=======
+        # Lower third, a bit wider than a 1px tick. Neon lives on the crown.
+        ya = int(key.y0 + 0.67 * (key.y1 - key.y0))
+        yb = key.y1
+>>>>>>> Stashed changes
         rw = max(2, (key.x1 - key.x0) // 3)
         xa = max(0, cx - rw)
         xb = min(width, cx + rw + 1)
@@ -905,8 +911,11 @@ def _suppress_neighbor_bleed(
             if strength[i] < strength[j] * BLEED_RATIO:
                 filtered[i] = False
                 break
+<<<<<<< Updated upstream
             # Glow on a black key next to a lit white is weaker; a real black
             # hit can still be below the white's sat without being bleed.
+=======
+>>>>>>> Stashed changes
             if (
                 key.is_black
                 and not keys[j].is_black
@@ -996,7 +1005,15 @@ def _scan_notes(
             if raw_on[i]:
                 pending_on[i] += 1
                 pending_off[i] = 0
+<<<<<<< Updated upstream
                 if not state[i] and pending_on[i] >= DEBOUNCE_ON:
+=======
+                if key.is_black or strength[i] >= STRONG_SAT:
+                    need = DEBOUNCE_ON_STRONG
+                else:
+                    need = DEBOUNCE_ON
+                if not state[i] and pending_on[i] >= need:
+>>>>>>> Stashed changes
                     state[i] = True
                     started[i] = time_s - (pending_on[i] - 1) / fps
                     strength_acc[i] = 0.0
