@@ -95,14 +95,15 @@ class VideoPreview(ttk.Frame):
         if self.time >= self.end - 1e-3:
             self.seek(self.start)
         self._playing = True
+        if not self._audio.resume():
+            self._audio.play(self.time, end=self.end)
         self._anchor_mono = time.monotonic()
         self._anchor_time = self.time
-        self._audio.play(self.time, end=self.end)
         self._schedule()
 
     def pause(self) -> None:
         self._playing = False
-        self._audio.stop()
+        self._audio.pause()
         if self._after is not None:
             self.after_cancel(self._after)
             self._after = None
@@ -128,6 +129,8 @@ class VideoPreview(ttk.Frame):
         self._anchor_time = self.time
         if self._playing:
             self._audio.play(self.time, end=self.end)
+        else:
+            self._audio.stop()
         if self._on_time:
             self._on_time(self.time)
 
@@ -148,7 +151,10 @@ class VideoPreview(ttk.Frame):
         self._after = None
         if not self._playing or self._cap is None:
             return
-        target = self._anchor_time + (time.monotonic() - self._anchor_mono)
+        if self._audio.alive():
+            target = min(self.end, max(self.start, self._audio.position()))
+        else:
+            target = self._anchor_time + (time.monotonic() - self._anchor_mono)
         if target >= self.end:
             self.pause()
             self.seek(self.end)
@@ -156,21 +162,23 @@ class VideoPreview(ttk.Frame):
         frame = None
         pos = self.time
         skipped = 0
-        while skipped < 12:
-            ok, nxt = self._cap.read()
-            if not ok or nxt is None:
-                self.pause()
-                if frame is not None:
-                    self.time = pos
-                    self._show(frame)
-                    if self._on_time:
-                        self._on_time(self.time)
-                return
-            frame = nxt
-            pos = self._video_time()
-            skipped += 1
-            if pos >= target - 0.5 / max(self.fps, 1.0):
-                break
+        slack = 0.5 / max(self.fps, 1.0)
+        if pos < target - slack:
+            while skipped < 12:
+                ok, nxt = self._cap.read()
+                if not ok or nxt is None:
+                    self.pause()
+                    if frame is not None:
+                        self.time = pos
+                        self._show(frame)
+                        if self._on_time:
+                            self._on_time(self.time)
+                    return
+                frame = nxt
+                pos = self._video_time()
+                skipped += 1
+                if pos >= target - slack:
+                    break
         self.time = pos
         if frame is not None:
             self._show(frame)

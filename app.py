@@ -12,6 +12,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from audio_player import ensure_pcm_wav
 from detector import DetectionError, DetectionResult, detect_notes
 from downloader import DownloadError, download_youtube, is_url, validate_local_video
 from midi_writer import write_midi
@@ -266,6 +267,8 @@ class PianoRollApp(tk.Tk):
             else:
                 video_path = validate_local_video(source)
                 title = video_path.stem
+            self.after(0, lambda: self.status_var.set("Preparing audio…"))
+            ensure_pcm_wav(video_path)
         except (DownloadError, OSError) as exc:
             self.after(0, self._on_error, str(exc))
             return

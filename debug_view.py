@@ -12,7 +12,7 @@ from tkinter import filedialog, ttk
 import cv2
 import numpy as np
 
-from audio_player import FileAudioPlayer
+from audio_player import FileAudioPlayer, ensure_pcm_wav
 
 from detector import (
     DetectionError,
@@ -113,6 +113,8 @@ def run_debug(source: str) -> None:
         delay = base_delay
         index = 0
         last: np.ndarray | None = None
+        print("Preparing audio…")
+        ensure_pcm_wav(video_path)
         audio.open(video_path)
         rate = 1.0
         anchor_mono = time.monotonic()
@@ -125,28 +127,27 @@ def run_debug(source: str) -> None:
         cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
         while True:
             if not paused or last is None:
-                target = anchor_index + (time.monotonic() - anchor_mono) * fps * rate
+                if audio.alive():
+                    target = audio.position() * fps
+                else:
+                    target = anchor_index + (time.monotonic() - anchor_mono) * fps * rate
                 skipped = 0
+                if last is None:
+                    ok, nxt = cap.read()
+                    if not ok or nxt is None:
+                        raise DetectionError("Could not read frames from the video.")
+                    last = nxt
+                    index += 1
                 while index < target - 0.5 and skipped < 12:
                     ok, nxt = cap.read()
                     if not ok or nxt is None:
+                        paused = True
+                        audio.pause()
                         break
                     last = nxt
                     index += 1
                     skipped += 1
-                if skipped == 0:
-                    ok, frame = cap.read()
-                    if not ok or frame is None:
-                        if last is None:
-                            raise DetectionError("Could not read frames from the video.")
-                        paused = True
-                        audio.stop()
-                        frame = last
-                    else:
-                        last = frame
-                        index += 1
-                else:
-                    frame = last
+                frame = last
             else:
                 frame = last
 
@@ -162,8 +163,8 @@ def run_debug(source: str) -> None:
             if key == ord(" "):
                 paused = not paused
                 if paused:
-                    audio.stop()
-                else:
+                    audio.pause()
+                elif not audio.resume():
                     anchor_mono = time.monotonic()
                     anchor_index = index
                     audio.play(index / fps, rate=rate)
@@ -175,23 +176,24 @@ def run_debug(source: str) -> None:
                 audio.stop()
             elif key == ord("."):
                 paused = False
-                anchor_mono = time.monotonic()
-                anchor_index = index
-                audio.play(index / fps, rate=rate)
+                if not audio.resume():
+                    anchor_mono = time.monotonic()
+                    anchor_index = index
+                    audio.play(index / fps, rate=rate)
             elif key == ord("["):
                 delay = min(500, delay * 2)
                 rate = base_delay / delay
                 if not paused:
+                    audio.play(index / fps, rate=rate)
                     anchor_mono = time.monotonic()
                     anchor_index = index
-                    audio.play(index / fps, rate=rate)
             elif key == ord("]"):
                 delay = max(1, delay // 2)
                 rate = base_delay / delay
                 if not paused:
+                    audio.play(index / fps, rate=rate)
                     anchor_mono = time.monotonic()
                     anchor_index = index
-                    audio.play(index / fps, rate=rate)
     finally:
         audio.close()
         cap.release()
