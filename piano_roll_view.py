@@ -13,7 +13,9 @@ from PIL import Image, ImageTk
 from detector import Note, _white_coord, is_black_key, midi_name
 
 NOTE_FILL = "#3d8bfd"
+NOTE_FILL_BLACK = "#2a6ad4"
 NOTE_ACTIVE = "#5ad0c8"
+NOTE_ACTIVE_BLACK = "#3aa89f"
 KEY_BG = "#0d0f12"
 WHITE_KEY = "#f2f2f2"
 WHITE_LIT = "#5ad0c8"
@@ -257,12 +259,17 @@ class PianoRollCanvas(ttk.Frame):
             if y_bottom - y_top < 2:
                 continue
             playing = note.start <= now < note.end
+            black = is_black_key(note.pitch)
+            if playing:
+                fill = NOTE_ACTIVE_BLACK if black else NOTE_ACTIVE
+            else:
+                fill = NOTE_FILL_BLACK if black else NOTE_FILL
             self.canvas.create_rectangle(
                 xa + 1,
                 y_top,
                 xb - 1,
                 y_bottom,
-                fill=NOTE_ACTIVE if playing else NOTE_FILL,
+                fill=fill,
                 outline="",
             )
 
