@@ -111,6 +111,7 @@ def run_debug(source: str) -> None:
         print(f"Keys: {len(keys)}  {midi_name(keys[0].midi)}–{midi_name(keys[-1].midi)}")
         print(HELP)
 
+        cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
         while True:
             if not paused or last is None:
                 ok, frame = cap.read()
@@ -130,8 +131,9 @@ def run_debug(source: str) -> None:
             shown = _fit_display(canvas)
             cv2.imshow(WINDOW, shown)
 
-            key = cv2.waitKey(0 if paused else delay) & 0xFF
-            if key in (ord("q"), 27):
+            # Don't use waitKey(0) while paused: the close button never wakes it.
+            key = cv2.waitKey(delay if not paused else 30) & 0xFF
+            if _window_was_closed(WINDOW) or key in (ord("q"), 27):
                 break
             if key == ord(" "):
                 paused = not paused
@@ -149,6 +151,13 @@ def run_debug(source: str) -> None:
     finally:
         cap.release()
         cv2.destroyAllWindows()
+
+
+def _window_was_closed(name: str) -> bool:
+    try:
+        return cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) < 1
+    except cv2.error:
+        return True
 
 
 def _resolve_source(source: str) -> Path:
